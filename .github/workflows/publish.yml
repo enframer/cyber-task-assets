@@ -1,0 +1,61 @@
+name: Publish sample runtimes
+on:
+  workflow_dispatch:
+    inputs:
+      relay_arm64:
+        required: true
+        type: string
+      relay_amd64:
+        required: true
+        type: string
+      asterway:
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Download and verify exact published artifacts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, zipfile
+          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())['inputs']
+          sources = [
+              ('relay_arm64', 'investigator-image.tar.gz', '4d533547b1eb6d9dabbc95a050add8aff3fc41f8fe2267771c16dc34278260a9'),
+              ('relay_amd64', 'investigator-image-amd64.tar.gz', '3e24a89eafa5c3925172b22435677822243900d9cbb61a904d6eac44c9d52353'),
+              ('asterway', 'asterway-lab-v1.zip', 'f80cea9b993c24ffd13ca4750e2dc4c7ee0295ecea09c8cc0a00b1d022261bfc'),
+          ]
+          def digest(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(8*1024*1024),b''):h.update(chunk)
+              return h.hexdigest()
+          for key,name,sha in sources:
+              url=inputs[key]
+              if not url.startswith('https://release-assets.githubusercontent.com/'):
+                  raise SystemExit('Unexpected artifact host')
+              print('::add-mask::'+url,flush=True)
+              subprocess.run(['curl','--fail','--location','--retry','3','--silent','--show-error','--output',name,url],check=True)
+              if digest(name)!=sha:raise SystemExit('Checksum mismatch: '+name)
+              print('Verified '+name,flush=True)
+          with zipfile.ZipFile('asterway-lab-v1.zip') as z:
+              for name,sha in [
+                  ('asterway-images-arm64.tar.gz','1957e396afb661084babbb927b74059a791bad3a0c2e434ef589fbb9f796267e'),
+                  ('asterway-images-amd64.tar.gz','3e369f980c036ea22d806050400aeb00fbb93abb0e876c97392ea256b4705383')]:
+                  with z.open('asterway-lab-v1/'+name) as src, open(name,'wb') as dst:
+                      for chunk in iter(lambda:src.read(8*1024*1024),b''):dst.write(chunk)
+                  if digest(name)!=sha:raise SystemExit('Checksum mismatch: '+name)
+                  print('Verified '+name,flush=True)
+          files=sorted(pathlib.Path('.').glob('*.tar.gz'))
+          pathlib.Path('SHA256SUMS').write_text(''.join(digest(p)+'  '+p.name+'\n' for p in files))
+          PY
+      - name: Publish runtime downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create samples-20261116-v1 --title 'Cyber task sample runtimes' --notes 'Exact pinned runtime archives for the RelayDesk and Asterway samples. Downloaded automatically by the lightweight task bundle. SHA-256 checksums included.' investigator-image.tar.gz investigator-image-amd64.tar.gz asterway-images-arm64.tar.gz asterway-images-amd64.tar.gz SHA256SUMS
